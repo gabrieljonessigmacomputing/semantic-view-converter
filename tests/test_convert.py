@@ -164,6 +164,44 @@ class ConvertTests(unittest.TestCase):
         self.assertEqual(formulas["Span"], 'Avg(DateDiff("day", [Start Date], [End Date]))')
         self.assertEqual(columns["Has Name"], "IsNotNull([Name])")
 
+    def test_spaced_comment_using_pin_and_undeclared_key(self):
+        sql = """
+        CREATE OR REPLACE SEMANTIC VIEW ANALYTICS.MODELS.SALES_VIEW
+          TABLES (
+            lineitem AS SNOWFLAKE_SAMPLE_DATA.TPCH_SF1.LINEITEM,
+            orders AS SNOWFLAKE_SAMPLE_DATA.TPCH_SF1.ORDERS PRIMARY KEY (o_orderkey)
+          )
+          RELATIONSHIPS (
+            lines_to_orders AS lineitem (l_orderkey) REFERENCES orders (o_orderkey)
+          )
+          FACTS (
+            PRIVATE lineitem.net_price AS l_extendedprice * (1 - l_discount)
+              COMMENT = 'Discounted line price'
+          )
+          METRICS (
+            lineitem.total_revenue AS SUM(net_price)
+              COMMENT = 'Revenue net of discount',
+            lineitem.revenue_by_order using (lines_to_orders) as SUM(net_price)
+          );
+        """
+        result = convert(sql, facts_as_metrics=False)
+        self.assertTrue(result["ok"], result["findings"])
+        els = {el["id"]: el for el in elements(result["spec"])}
+        lineitem = els["lineitem"]
+        net = next(c for c in lineitem["columns"] if c["name"] == "Net Price")
+        self.assertEqual(net["formula"], "[L Extendedprice] * (1 - [L Dis Count])")
+        self.assertEqual(net["description"].split("\n")[0], "Discounted line price")
+        key = next(c for c in lineitem["columns"] if c["formula"] == "[LINEITEM/L_ORDERKEY]")
+        rel = lineitem["relationships"][0]
+        self.assertEqual(rel["keys"][0]["sourceColumnId"], key["id"])
+        orders_key = next(c for c in els["orders"]["columns"] if c["formula"] == "[ORDERS/O_ORDERKEY]")
+        self.assertEqual(rel["keys"][0]["targetColumnId"], orders_key["id"])
+        self.assertEqual(len([c for c in els["orders"]["columns"] if "O_ORDERKEY" in c["formula"]]), 1)
+        codes = [f["code"] for f in result["findings"]]
+        self.assertIn("USING", codes)
+        revenue = next(m for m in lineitem["metrics"] if m["name"] == "Revenue by Order")
+        self.assertEqual(revenue["formula"], "Sum([Net Price])")
+
     def test_unqualified_table_asks_for_database_and_schema(self):
         sql = """
         create or replace semantic view DEMO.SV

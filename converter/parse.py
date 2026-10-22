@@ -99,11 +99,18 @@ def _clean_description(text):
 def _cut_clauses(item):
     comment = None
     cpos = None
+    clen = 0
     for i, _, depth, quoted in _scan(item):
-        if not quoted and depth == 0 and item[i : i + 8].lower() == "comment=":
+        if quoted or depth != 0:
+            continue
+        if i and (item[i - 1].isalnum() or item[i - 1] == "_"):
+            continue
+        match = re.match(r"comment\s*=\s*", item[i:], re.I)
+        if match:
             cpos = i
+            clen = match.end()
     if cpos is not None:
-        comment = item[cpos + 8 :]
+        comment = item[cpos + clen :]
         item = item[:cpos].rstrip()
     synonyms = []
     spos = None
@@ -221,7 +228,7 @@ def parse_ddl(text):
             private = bool(re.match(r"private\s+", head, re.I))
             head = re.sub(r"^(private|public)\s+", "", head, flags=re.I)
             mm = re.match(
-                r"(?:(\w+)\.)?(\w+)\s+((?:(?:labels\s*=\s*\([^)]*\)|non\s+additive\s+by\s*\([^)]*\))\s*)*)as\s+(.*)$",
+                r"(?:(\w+)\.)?(\w+)\s+((?:(?:labels\s*=\s*\([^)]*\)|non\s+additive\s+by\s*\([^)]*\)|using\s*\([^)]*\))\s*)*)as\s+(.*)$",
                 head, re.I | re.S,
             )
             if not mm:
@@ -257,6 +264,18 @@ def parse_ddl(text):
     return view
 
 
+def _using_extra(metric):
+    names = []
+    for rel in metric.get("using_relationships") or []:
+        if isinstance(rel, str) and rel.strip():
+            names.append(rel.strip())
+        elif isinstance(rel, dict) and rel.get("name"):
+            names.append(str(rel["name"]))
+    if not names:
+        return None
+    return "using (" + ", ".join(names) + ")"
+
+
 def parse_yaml(text):
     if "$$" in text:
         text = text.split("$$", 2)[1]
@@ -273,7 +292,7 @@ def parse_yaml(text):
         view["view_metrics"].append({
             "name": metric.get("name"), "expr": metric.get("expr") or "",
             "synonyms": metric.get("synonyms") or [], "description": metric.get("description"),
-            "private": False, "extra": None,
+            "private": False, "extra": _using_extra(metric),
         })
     for table in doc.get("tables") or []:
         base = table.get("base_table") or {}
@@ -297,7 +316,7 @@ def parse_yaml(text):
             parsed["metrics"].append({
                 "name": metric["name"], "expr": metric.get("expr") or "",
                 "synonyms": metric.get("synonyms") or [], "description": metric.get("description"),
-                "private": metric.get("access_modifier") == "private_access", "extra": None,
+                "private": metric.get("access_modifier") == "private_access", "extra": _using_extra(metric),
             })
         view["tables"].append(parsed)
     for rel in doc.get("relationships") or []:

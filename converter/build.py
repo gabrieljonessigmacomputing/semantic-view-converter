@@ -362,7 +362,7 @@ def convert(source, connection_id=None, catalog=None, facts_as_metrics=True, nam
     def field_on(element, ident):
         return element["by_logical"].get(ident.upper()) or element["by_physical"].get(_norm(ident))
 
-    def ensure_helper(element, physical_name):
+    def ensure_helper(element, physical_name, reason="metric"):
         found = field_on(element, physical_name)
         if found:
             return found
@@ -384,7 +384,12 @@ def convert(source, connection_id=None, catalog=None, facts_as_metrics=True, nam
             "field": {"name": spelling, "kind": "helper", "synonyms": [], "description": None, "expr": spelling},
             "type_kind": type_kind,
         }
-        desc = "Helper column: used by the semantic view's own metrics but not declared as a field."
+        if reason == "key":
+            desc = "Relationship key. The semantic view names this column and does not declare it as a field."
+            why = "The relationship names it, and it is not a declared field."
+        else:
+            desc = "Helper column: used by the semantic view's own metrics but not declared as a field."
+            why = "The semantic view's metrics use it, and it is not a declared field."
         spec_col = {"id": col_id, "name": display, "formula": formula, "description": desc}
         fmt = _format_for(spelling, [], "", type_kind) if infer_number_formats else None
         if fmt:
@@ -395,7 +400,7 @@ def convert(source, connection_id=None, catalog=None, facts_as_metrics=True, nam
         element["by_physical"][_norm(spelling)] = record
         findings.append({
             "level": "info", "code": "HELPER_COLUMN",
-            "message": f"{element['name']}.{display} = {formula}. The semantic view's metrics use it, and it is not a declared field.",
+            "message": f"{element['name']}.{display} = {formula}. {why}",
         })
         return record
 
@@ -492,14 +497,14 @@ def convert(source, connection_id=None, catalog=None, facts_as_metrics=True, nam
             })
             ok = False
         for source_name, target_name in pairs:
-            source_col = field_on(src, source_name)
-            target_col = field_on(dst, target_name)
+            source_col = field_on(src, source_name) or ensure_helper(src, source_name, reason="key")
+            target_col = field_on(dst, target_name) or ensure_helper(dst, target_name, reason="key")
             if not source_col or not target_col:
                 ok = False
                 missing = source_name if not source_col else target_name
                 findings.append({
                     "level": "error", "code": "RELATIONSHIP",
-                    "message": f"{rel['name']} names {missing}, which is not a field. No phantom key column was added.",
+                    "message": f"{rel['name']} names {missing}, which is not a column.",
                 })
                 continue
             keys.append({"sourceColumnId": source_col["id"], "targetColumnId": target_col["id"]})
